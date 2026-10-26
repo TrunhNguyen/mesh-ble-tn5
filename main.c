@@ -68,6 +68,70 @@
 #include "nrf_uarte.h"
 #endif
 
+/* ===================== CAU HINH TN5 (chi sua o day) ===================== */
+#define EXP_TN5_ENERGY                1
+
+/* Bien the build: 0 = A (ngu sau), 1 = B/C (hoat dong binh thuong) */
+#ifndef EXP_TN5_DEEPSLEEP
+#define EXP_TN5_DEEPSLEEP             0
+#endif
+#define EXP_TN5_DS                    EXP_TN5_DEEPSLEEP
+
+/* Vai tro: 0 = LPN (relay tat) | 1 = relay voi EXP_TN5_RELAY_RETX = 0, 2 hoac 5 */
+#ifndef EXP_TN5_ROLE
+#define EXP_TN5_ROLE                  1
+#endif
+#ifndef EXP_TN5_RELAY_RETX
+#define EXP_TN5_RELAY_RETX            2
+#endif
+#if (EXP_TN5_ROLE == 0)
+#define EXP_RELAY_EXPECT_EN           0
+#define EXP_TN5_CFG_IDX               9
+#else
+#define EXP_RELAY_EXPECT_EN           1
+#if   (EXP_TN5_RELAY_RETX == 0)
+#define EXP_TN5_CFG_IDX               1
+#elif (EXP_TN5_RELAY_RETX == 2)
+#define EXP_TN5_CFG_IDX               9
+#elif (EXP_TN5_RELAY_RETX == 5)
+#define EXP_TN5_CFG_IDX               17
+#else
+#error "EXP_TN5_RELAY_RETX chi nhan 0, 2 hoac 5"
+#endif
+#endif
+#define EXP_STOCK_IDX                 EXP_TN5_CFG_IDX
+
+/* Xung TRIG: 1 cho bien the B (cat trang thai), 0 cho A va C (do dong TB, TRIG lam sai dong) */
+#ifndef EXP_ENABLE_TRIG
+#define EXP_ENABLE_TRIG               0
+#endif
+
+/* Chu ky nhiem vu */
+#define EXP_TN5_AUTORUN               1
+#define EXP_TN5_AUTORUN_DELAY_S       30
+#define EXP_TN5_SENSE_PERIOD_S        5
+#define EXP_TN5_MQ2_ON_S              20
+#define EXP_TN5_MQ2_PERIOD_S          300
+#define EXP_TN5_MQ2_SETTLE_S          15
+#define EXP_TN5_LCD_SLEEP             1
+#define EXP_TN5_DS_MESH_DISABLE       1
+#ifndef MQ2_HEATER_ACTIVE_LEVEL
+#define MQ2_HEATER_ACTIVE_LEVEL       1
+#endif
+/* MQ2_HEATER_EN_PIN: KHONG bat buoc. Neu khai bao (-DMQ2_HEATER_EN_PIN=n) thi firmware duty-cycle soi dot;
+ * neu khong thi soi dot chay lien tuc nhu cac TN truoc. */
+
+/* Co dinh cho TN5 */
+#define EXP_ID                        5
+#define FW_GIT_HASH                   "tn5_v1"
+#define EXP_NUM_MSGS                  65535
+#define EXP_HOP_WHITELIST             0
+#define EXP_DEBUG_RX_MAC              0
+#define EXP_RTT_KEYS                  0
+#define EXP_LIVE_LOG                  0
+#define EXP_TN4_LOCK_STOCK            1
+/* ======================================================================== */
+
 #ifndef EXP_ID
 #define EXP_ID                    4
 #endif
@@ -140,7 +204,9 @@
 #ifndef EXP_TN4_LOCK_STOCK
 #define EXP_TN4_LOCK_STOCK        1
 #endif
+#ifndef EXP_STOCK_IDX
 #define EXP_STOCK_IDX             9
+#endif
 #ifndef EXP_TN3_START_IDX
 #define EXP_TN3_START_IDX         EXP_STOCK_IDX
 #endif
@@ -152,21 +218,11 @@
 #error "EXP_HOPS phai nam trong 1..4"
 #endif
 
-#if EXP_SEND_UNACK
 #define EXP_PAYLOAD_LEN           5
-#else
-#define EXP_PAYLOAD_LEN           7
-#endif
 
-#if EXP_TRACE_STEPS
-#define EXP_STEP(s)               SEGGER_RTT_WriteString(0, "# [STEP] " s "\r\n")
-#else
 #define EXP_STEP(s)               ((void)0)
-#endif
 
-#if EXP_READ_CFG
 #include "mesh_opt_core.h"
-#endif
 
 #ifndef TRIG_PIN
 #define TRIG_PIN                  11
@@ -181,8 +237,12 @@
 #define EXP_TRIG_TX               1
 #define EXP_TRIG_FWD              2
 #define EXP_TRIG_RX               3
+/* TN5: marker trang thai (chi co tac dung khi EXP_ENABLE_TRIG=1, bien the B) */
+#define EXP_TRIG_SENSE            4   /* bat dau chu ky doc cam bien AHT10 (+MQ-2) */
+#define EXP_TRIG_HEAT_ON          5   /* soi dot MQ-2 bat */
+#define EXP_TRIG_HEAT_OFF         6   /* soi dot MQ-2 tat */
 
-static volatile uint32_t m_trig_cnt[4];
+static volatile uint32_t m_trig_cnt[8];
 
 void exp_trig_begin(void)
 {
@@ -203,13 +263,19 @@ void exp_trig_end(uint8_t pulses)
         nrf_delay_us(TRIG_WIDTH_US);
         nrf_gpio_pin_clear(TRIG_PIN);
     }
-    if (pulses < 4)
+    if (pulses < 8)
     {
         m_trig_cnt[pulses]++;
     }
 #else
     (void)pulses;
 #endif
+}
+
+static inline void exp_trig_marker(uint8_t pulses)
+{
+    exp_trig_begin();
+    exp_trig_end(pulses);
 }
 
 typedef struct {
@@ -390,86 +456,15 @@ void exp_chain_mac_init(void)
         }
     }
 
-#if EXP_HOP_WHITELIST
-    if (m_my_chain_index == -1)
-    {
-        SEGGER_RTT_WriteString(0, "# [LOI] MAC KHONG CO TRONG BANG CHUOI! TU CHOI chay run.\r\n");
-    }
-    else
-    {
-        SEGGER_RTT_printf(0, "# [INFO] Node index trong chuoi: %d\r\n", (int)m_my_chain_index);
-    }
-#endif
 }
 
 #define EXP_GW_INDEX              4
 
-volatile uint8_t g_dbg_rx_mac_left = 0;
 volatile uint8_t g_exp_hops = EXP_HOPS;
 
 static inline bool exp_is_dest(void)
 {
-#if EXP_HOP_WHITELIST
-    return (m_my_chain_index == EXP_GW_INDEX);
-#else
     return true;
-#endif
-}
-
-bool exp_packet_allow(const uint8_t * p_adv_addr, uint8_t adv_type)
-{
-#if EXP_HOP_WHITELIST
-    if (adv_type != 0x2A)
-    {
-        return true;
-    }
-    if (m_my_chain_index <= 0)
-    {
-        return false;
-    }
-
-    const int hops = (int)g_exp_hops;
-    int pred;
-    if (m_my_chain_index == EXP_GW_INDEX)
-    {
-        pred = hops - 1;
-    }
-    else if (m_my_chain_index < hops)
-    {
-        pred = m_my_chain_index - 1;
-    }
-    else
-    {
-        return false;
-    }
-
-    return (memcmp(p_adv_addr, EXP_TOPOLOGY_CHAIN[pred].addr, BLE_GAP_ADDR_LEN) == 0);
-#else
-    (void)p_adv_addr;
-    (void)adv_type;
-    return true;
-#endif
-}
-
-bool exp_packet_is_neighbor_echo(const uint8_t * p_adv_addr, uint8_t adv_type)
-{
-#if EXP_HOP_WHITELIST && EXP_CACHE_COUNT_BACK_ECHO
-    if (adv_type != 0x2A)
-    {
-        return false;
-    }
-    const int hops = (int)g_exp_hops;
-    if (m_my_chain_index > 0 && m_my_chain_index < (hops - 1))
-    {
-        int succ = m_my_chain_index + 1;
-        return (memcmp(p_adv_addr, EXP_TOPOLOGY_CHAIN[succ].addr, BLE_GAP_ADDR_LEN) == 0);
-    }
-    return false;
-#else
-    (void)p_adv_addr;
-    (void)adv_type;
-    return false;
-#endif
 }
 
 extern uint32_t m_secondCounter;
@@ -543,8 +538,14 @@ void uart_error_handle(app_uart_evt_t * p_event)
 
 dsm_local_unicast_address_t node_address;
 
+static volatile bool m_uart_ready = false;
+
 void uart_puts(const char *_ch)
 {
+    if (!m_uart_ready)
+    {
+        return;
+    }
     while (*_ch)
     {
         if (app_uart_put(*_ch) != NRF_SUCCESS)
@@ -580,6 +581,7 @@ void uart_init(void)
                        APP_IRQ_PRIORITY_LOWEST,
                        err_code);
     APP_ERROR_CHECK(err_code);
+    m_uart_ready = true;
 }
 
 #define LOG_QUEUE_SIZE        16
@@ -595,11 +597,9 @@ static void log_uart_mesh_event(const char* event, uint16_t src, uint16_t dst,
                                 uint32_t seq, uint8_t ttl_tx, uint8_t ttl_rx,
                                 int8_t rssi, const char* traffic_class, uint8_t len)
 {
-#if !EXP_LIVE_LOG
     (void)event; (void)src; (void)dst; (void)seq; (void)ttl_tx; (void)ttl_rx;
     (void)rssi; (void)traffic_class; (void)len;
     return;
-#endif
     if (!m_logging_enabled)
     {
         return;
@@ -664,9 +664,6 @@ static volatile uint32_t m_relay_ok_cnt     = 0;
 static volatile uint32_t m_rx_unique_cnt    = 0;
 
 static volatile bool     m_req_toggle       = false;
-#if EXP_HOPS_RUNTIME
-static volatile bool     m_req_hops         = false;
-#endif
 static volatile bool     m_run_done         = false;
 static volatile bool     m_run_aborted      = false;
 static volatile bool     m_role_tx          = false;
@@ -897,7 +894,7 @@ static void log_config_init(void)
     {
         NRF_LOG_DEFAULT_BACKENDS_INIT();
     }
-    SEGGER_RTT_WriteString(0, "\r\n\r\n====== RTT DA KET NOI THANH CONG (TN4 v1) ======\r\n");
+    SEGGER_RTT_WriteString(0, "\r\n\r\n====== RTT DA KET NOI THANH CONG (" FW_GIT_HASH ") ======\r\n");
     SEGGER_RTT_WriteString(0, "# Lenh RTT TN4: 'wf=CH,LOAD'+Enter (CH=0/1/6/11, LOAD=Mb/s do duoc), 'run=K'+Enter, 'n=10..1100'+Enter, '2' (Run), '3' (Dump), '4' (Clear), 's' (Status). Cau hinh khoa stock idx=9.\r\n\r\n");
 }
 
@@ -913,11 +910,33 @@ void mq2_saadc_init(void)
 
 uint16_t read_mq2_sensor(void)
 {
-    nrf_saadc_value_t val;
+    nrf_saadc_value_t val = 0;
+    /* TN5: SAADC chi bat trong luc lay mau, doc xong tat han (khong de SAADC enable luc ngu) */
+    mq2_saadc_init();
     nrf_drv_saadc_sample_convert(0, &val);
+    nrf_drv_saadc_uninit();
     if (val < 0) val = 0;
     return (uint16_t)val;
 }
+
+/* Soi dot MQ-2 ~800 mW neu chay lien tuc. Chi dieu khien duoc khi board co chan GPIO bat/tat no. */
+#ifdef MQ2_HEATER_EN_PIN
+static void mq2_heater_set(bool on)
+{
+    nrf_gpio_pin_write(MQ2_HEATER_EN_PIN, (on == (MQ2_HEATER_ACTIVE_LEVEL != 0)) ? 1 : 0);
+}
+
+static void mq2_heater_init(void)
+{
+    nrf_gpio_cfg_output(MQ2_HEATER_EN_PIN);
+    mq2_heater_set(false);
+}
+#define EXP_TN5_HEATER_CTRL 1
+#else
+static void mq2_heater_set(bool on) { (void)on; }
+static void mq2_heater_init(void) { }
+#define EXP_TN5_HEATER_CTRL 0
+#endif
 
 #define APP_LEVEL_ELEMENT_INDEX       (0)
 #define APP_FORCE_SEGMENTATION        (false)
@@ -976,20 +995,6 @@ static void app_gen_level_client_publish_interval_cb(access_model_handle_t handl
      __LOG(LOG_SRC_APP, LOG_LEVEL_WARN, "Publish desired message here.\n");
 }
 
-static void alarm_status_check(void)
-{
-    if (nrf_gpio_pin_read(BSP_BUTTON_0) == false)
-    {
-        m_present_level = _fireAlarmStatus;
-        bsp_board_led_on(BSP_BOARD_LED_3);
-    }
-    else
-    {
-        m_present_level = _normalStatus;
-        bsp_board_led_off(BSP_BOARD_LED_3);
-    }
-}
-
 static volatile uint16_t m_tx_packet_count = 0;
 static uint32_t m_global_seq = 0;
 
@@ -1023,24 +1028,12 @@ static void publish_present_alarm_status(bool _statusSending)
     set_params.level = (int16_t)payload;
     set_params.tid   = m_tid_counter++;
 
-#if EXP_SEND_UNACK
     if (m_tx_packet_count < 3) { EXP_STEP("set_unack"); }
-#else
-    if (m_tx_packet_count < 3) { EXP_STEP("set_acked_diag"); }
-    model_transition_t transition_params;
-    transition_params.delay_ms = APP_LEVEL_DELAY_MS;
-    transition_params.transition_time_ms = APP_LEVEL_TRANSITION_TIME_MS;
-    (void)access_model_reliable_cancel(m_clients[client].model_handle);
-#endif
 
     exp_trig_begin();
     const uint32_t t_tx_us = get_local_time_us();
 
-#if EXP_SEND_UNACK
     uint32_t status = generic_level_client_set_unack(&m_clients[client], &set_params, NULL, 0);
-#else
-    uint32_t status = generic_level_client_set(&m_clients[client], &set_params, &transition_params);
-#endif
 
     exp_trig_end(EXP_TRIG_TX);
 
@@ -1093,16 +1086,7 @@ static void mesh_main_button_event_handler(uint32_t button_number)
     switch (button_number)
     {
         case 1:
-#if EXP_ENABLE_ALARM_BUTTON
-            alarm_status_check();
-            trigger_egu30_event();
-#elif EXP_TN4_LOCK_STOCK
             m_status_requested = true;
-#elif EXP_TN3_PRESET_RUNTIME
-            m_req_tn3_target = (int8_t)((m_tn3_cfg_idx + 1) % EXP_TN3_NUM_CFGS);
-#elif EXP_HOPS_RUNTIME
-            m_req_hops = true;
-#endif
             break;
         case 2:
             m_req_toggle = true;
@@ -1129,223 +1113,6 @@ static void mesh_main_button_event_handler(uint32_t button_number)
     }
 }
 
-#if EXP_RTT_KEYS
-static char     m_rtt_cmd_buf[24];
-static uint8_t  m_rtt_cmd_len     = 0;
-static bool     m_rtt_cmd_invalid = false;
-static uint32_t m_rtt_cmd_last_us = 0;
-
-static bool rtt_parse_uint(const char ** pp, int * p_out)
-{
-    const char * q = *pp;
-    while (*q == ' ')
-    {
-        q++;
-    }
-    if (*q < '0' || *q > '9')
-    {
-        return false;
-    }
-    int v = 0;
-    while (*q >= '0' && *q <= '9')
-    {
-        v = v * 10 + (*q - '0');
-        if (v > 9999)
-        {
-            return false;
-        }
-        q++;
-    }
-    while (*q == ' ')
-    {
-        q++;
-    }
-    *p_out = v;
-    *pp    = q;
-    return true;
-}
-
-static bool exp_rtt_exec_single_key(char ch)
-{
-    if (ch >= '1' && ch <= '4')
-    {
-        mesh_main_button_event_handler((uint32_t)(ch - '1'));
-        return true;
-    }
-    if (ch == 'c' || ch == 'C')
-    {
-        m_req_tn3_target = (int8_t)((m_tn3_cfg_idx + 1) % EXP_TN3_NUM_CFGS);
-        return true;
-    }
-    if (ch == 'p' || ch == 'P')
-    {
-        m_req_tn3_target = (int8_t)((m_tn3_cfg_idx == 0) ? (EXP_TN3_NUM_CFGS - 1) : (m_tn3_cfg_idx - 1));
-        return true;
-    }
-    if (ch == '0')
-    {
-        m_req_tn3_target = 0;
-        return true;
-    }
-    if (ch == '9')
-    {
-        m_req_tn3_target = 9;
-        return true;
-    }
-    if (ch == 's' || ch == 'S' || ch == '?')
-    {
-        m_status_requested = true;
-        return true;
-    }
-    return false;
-}
-
-static void exp_rtt_key_handler(int key)
-{
-    if (key < 0)
-    {
-        return;
-    }
-
-    char ch = (char)key;
-    uint32_t now_us = get_local_time_us();
-
-    /* Neu bo do qua 15 giay khong go tiep thi huy chuoi cu */
-    if (m_rtt_cmd_len > 0 && ((now_us - m_rtt_cmd_last_us) > 15000000u))
-    {
-        m_rtt_cmd_len     = 0;
-        m_rtt_cmd_invalid = false;
-    }
-
-    if (m_rtt_cmd_len > 0)
-    {
-        /* Ho tro phim Backspace khi go nham */
-        if (ch == '\b' || ch == 0x7F)
-        {
-            m_rtt_cmd_len--;
-            if (m_rtt_cmd_len == 0)
-            {
-                m_rtt_cmd_invalid = false;
-            }
-            m_rtt_cmd_last_us = now_us;
-            return;
-        }
-
-        if (ch == '\r' || ch == '\n')
-        {
-            m_rtt_cmd_buf[m_rtt_cmd_len] = '\0';
-            if (m_rtt_cmd_invalid)
-            {
-                SEGGER_RTT_printf(0, "# [LOI_RTT] Lenh '%s' co ky tu sai cu phap -> da huy an toan.\r\n",
-                                  m_rtt_cmd_buf);
-            }
-            else if (strncmp(m_rtt_cmd_buf, "idx=", 4) == 0 || strncmp(m_rtt_cmd_buf, "IDX=", 4) == 0)
-            {
-                const char * q = &m_rtt_cmd_buf[4];
-                int val = -1;
-                if (rtt_parse_uint(&q, &val) && (*q == '\0') && val >= 0 && val < (int)EXP_TN3_NUM_CFGS)
-                {
-                    m_req_tn3_target = (int8_t)val;
-                }
-                else
-                {
-                    SEGGER_RTT_printf(0, "# [LOI_RTT] idx='%s' khong hop le!\r\n", m_rtt_cmd_buf);
-                }
-            }
-            else if (strncmp(m_rtt_cmd_buf, "n=", 2) == 0 || strncmp(m_rtt_cmd_buf, "N=", 2) == 0)
-            {
-                const char * q = &m_rtt_cmd_buf[2];
-                int msgs = 0;
-                if (!periodic_message_allowed && rtt_parse_uint(&q, &msgs) && (*q == '\0') &&
-                    msgs >= 5 && msgs <= (int)MAX_OFFLINE_RECORDS)
-                {
-                    m_target_msgs = (uint16_t)msgs;
-                    SEGGER_RTT_printf(0, "# [INFO_RTT] Da dat num_msgs = %u goi/run.\r\n", (unsigned)m_target_msgs);
-                }
-                else
-                {
-                    SEGGER_RTT_printf(0, "# [LOI_RTT] Khong the doi num_msgs (dang chay hoac ngoai 5..%u).\r\n",
-                                      (unsigned)MAX_OFFLINE_RECORDS);
-                }
-            }
-            else if (strncmp(m_rtt_cmd_buf, "wf=", 3) == 0 || strncmp(m_rtt_cmd_buf, "WF=", 3) == 0)
-            {
-                const char * q = &m_rtt_cmd_buf[3];
-                int wch = 0, wload = 0;
-                bool ok = rtt_parse_uint(&q, &wch) && (*q == ',');
-                if (ok)
-                {
-                    q++;
-                    ok = rtt_parse_uint(&q, &wload) && (*q == '\0');
-                }
-                ok = ok && (wch == 0 || wch == 1 || wch == 6 || wch == 11) &&
-                     (wload <= 100) && !(wch == 0 && wload != 0);
-                if (ok && !periodic_message_allowed)
-                {
-                    m_wifi_ch   = (uint8_t)wch;
-                    m_wifi_mbps = (uint16_t)wload;
-                    SEGGER_RTT_printf(0, "# [INFO_RTT] Nhan Wi-Fi: kenh=%d, tai do duoc=%d Mb/s (tu xoa sau khi xa log).\r\n", wch, wload);
-                }
-                else
-                {
-                    SEGGER_RTT_WriteString(0, "# [LOI_RTT] 'wf=CH,LOAD': CH thuoc {0,1,6,11}, LOAD 0..100, CH=0 thi LOAD=0, va khong dang chay.\r\n");
-                }
-            }
-            else if (strncmp(m_rtt_cmd_buf, "run=", 4) == 0 || strncmp(m_rtt_cmd_buf, "RUN=", 4) == 0)
-            {
-                const char * q = &m_rtt_cmd_buf[4];
-                int k = 0;
-                if (rtt_parse_uint(&q, &k) && (*q == '\0') && k >= 1 && k <= 255 && !periodic_message_allowed)
-                {
-                    m_run_k = (uint8_t)k;
-                    SEGGER_RTT_printf(0, "# [INFO_RTT] So thu tu run = %d.\r\n", k);
-                }
-                else
-                {
-                    SEGGER_RTT_WriteString(0, "# [LOI_RTT] 'run=K': K 1..255 va khong dang chay.\r\n");
-                }
-            }
-            else
-            {
-                SEGGER_RTT_printf(0, "# [LOI_RTT] Lenh '%s' khong hop le. Go 'wf=CH,LOAD', 'run=K', 'n=30..1000' + Enter.\r\n",
-                                  m_rtt_cmd_buf);
-            }
-            m_rtt_cmd_len     = 0;
-            m_rtt_cmd_invalid = false;
-            return;
-        }
-
-        /* Giu tat ca ky tu trong bo dem cho den khi nhan Enter de khong bao gio
-         * lam lot cac so '2', '3', '4' xuong lenh phim don khi go nham! */
-        if (m_rtt_cmd_len < (sizeof(m_rtt_cmd_buf) - 1))
-        {
-            m_rtt_cmd_buf[m_rtt_cmd_len++] = ch;
-        }
-        else
-        {
-            m_rtt_cmd_invalid = true;
-        }
-        m_rtt_cmd_last_us = now_us;
-        return;
-    }
-
-    if (ch == 'i' || ch == 'I' || ch == 'n' || ch == 'N' || ch == 'w' || ch == 'W' || ch == 'r' || ch == 'R')
-    {
-        m_rtt_cmd_buf[0]  = ch;
-        m_rtt_cmd_len     = 1;
-        m_rtt_cmd_invalid = false;
-        m_rtt_cmd_last_us = now_us;
-        return;
-    }
-
-    if (ch == '\r' || ch == '\n' || ch == ' ')
-    {
-        return;
-    }
-
-    (void)exp_rtt_exec_single_key(ch);
-}
-#endif
 
 void bsp_event_handler(bsp_event_t event)
 {
@@ -1416,15 +1183,7 @@ static void app_level_server_set_cb(const app_level_server_t * p_server, uint32_
         src_addr = raw_src - 1;
     }
 
-#if EXP_LIVE_LOG
-    SEGGER_RTT_printf(0, "[RX] Node: 0x%04X | %s | Seq: %u | RSSI: %d\r\n",
-                      src_addr,
-                      (traffic_bit == 1) ? "ALARM" : "TELEMETRY",
-                      seq_num,
-                      g_last_mesh_rssi);
-#else
     (void)seq_num;
-#endif
 
     uint32_t display_stat = (traffic_bit == 1) ? _fireAlarmStatus : _normalStatus;
     insert_node((uint8_t)(src_addr & 0xFF), display_stat, false);
@@ -1551,12 +1310,10 @@ static void mesh_init(void)
 static void initialize(void)
 {
     __LOG_INIT(LOG_SRC_APP, LOG_LEVEL_WARN, LOG_CALLBACK_DEFAULT);
-    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "----- BLE Mesh Sensor Node (TN4 v1) -----\n");
+    __LOG(LOG_SRC_APP, LOG_LEVEL_INFO, "----- BLE Mesh Sensor Node (" FW_GIT_HASH ") -----\n");
 
     exp_noinit_check_on_boot();
-#if EXP_TN4_LOCK_STOCK
     m_tn3_cfg_idx = EXP_STOCK_IDX;
-#endif
 
     ERROR_CHECK(app_timer_init());
     hal_leds_init();
@@ -1599,9 +1356,6 @@ static void initialize(void)
     hal_led_blink_ms(BLUE_LED_pos | YELLOW_LED_pos, LED_BLINK_INTERVAL_MS, LED_BLINK_CNT_PROV);
     mesh_init();
 
-#if EXP_RTT_KEYS
-    rtt_input_enable(exp_rtt_key_handler, 50);
-#endif
 }
 
 static void start(void)
@@ -1791,7 +1545,6 @@ void display_ClientStatus(void)
     }
 }
 
-#if EXP_READ_CFG
 static bool model_pub_dst_get(access_model_handle_t h, uint16_t * p_dst)
 {
     dsm_handle_t dh = DSM_HANDLE_INVALID;
@@ -1805,7 +1558,6 @@ static bool model_pub_dst_get(access_model_handle_t h, uint16_t * p_dst)
     }
     return false;
 }
-#endif
 
 static void exp_cfg_capture(void)
 {
@@ -1828,7 +1580,6 @@ static void exp_cfg_capture(void)
         return;
     }
 
-#if EXP_READ_CFG
     (void)access_model_publish_ttl_get(m_clients[0].model_handle, &m_cfg_ttl_pub);
     m_cfg_ttl_eff = (m_cfg_ttl_pub == 0xFF) ? access_default_ttl_get() : m_cfg_ttl_pub;
 
@@ -1877,10 +1628,13 @@ static void exp_cfg_capture(void)
 
     const exp_tn3_cfg_t * p = &EXP_TN3_TABLE[m_tn3_cfg_idx];
     bool tx_ok    = (m_cfg_txcnt == p->net_tx) && (m_cfg_txint_ms == 20);
+#if EXP_RELAY_EXPECT_EN
     bool relay_ok = (m_cfg_relay_en == 1) && (m_cfg_relay_tx == (uint8_t)(p->relay_retx + 1)) && (m_cfg_relay_int_ms == 20);
+#else
+    bool relay_ok = (m_cfg_relay_en == 0);   /* TN5 vai tro LPN: relay phai TAT */
+#endif
     bool ttl_ok   = (m_cfg_ttl_eff == p->ttl);
     m_cfg_match_ok = tx_ok && relay_ok && ttl_ok;
-#endif
 }
 
 static void exp_cfg_line(char * out, size_t n)
@@ -1910,16 +1664,11 @@ static void exp_cfg_line(char * out, size_t n)
              (int)m_my_chain_index,
              m_my_ble_addr.addr[5], m_my_ble_addr.addr[4], m_my_ble_addr.addr[3],
              m_my_ble_addr.addr[2], m_my_ble_addr.addr[1], m_my_ble_addr.addr[0],
-#if EXP_READ_CFG
              "read_verified",
-#else
-             "not_read",
-#endif
              m_cfg_srv_pub, m_cfg_cli_pub, (unsigned)m_tx_dst,
              (unsigned)m_tx_fail_total, (unsigned)m_last_err, (unsigned)g_reset_reason);
 }
 
-#if EXP_TN3_PRESET_RUNTIME
 static bool exp_tn3_apply_preset(uint8_t idx, bool blink_led)
 {
     if (idx >= EXP_TN3_NUM_CFGS)
@@ -1948,7 +1697,7 @@ static bool exp_tn3_apply_preset(uint8_t idx, bool blink_led)
     mesh_opt_core_adv_t adv_rel;
     if (mesh_opt_core_adv_get(CORE_TX_ROLE_RELAY, &adv_rel) == NRF_SUCCESS)
     {
-        adv_rel.enabled        = true;
+        adv_rel.enabled        = (EXP_RELAY_EXPECT_EN != 0);
         adv_rel.tx_count       = (uint8_t)(p->relay_retx + 1u);
         adv_rel.tx_interval_ms = 20;
         err_rel = mesh_opt_core_adv_set(CORE_TX_ROLE_RELAY, &adv_rel);
@@ -2000,14 +1749,12 @@ static bool exp_tn3_apply_preset(uint8_t idx, bool blink_led)
 
 static void exp_tn3_select_preset(uint8_t target_idx)
 {
-#if EXP_TN4_LOCK_STOCK
     if (target_idx != EXP_STOCK_IDX)
     {
         SEGGER_RTT_printf(0, "# [LOI] TN4 khoa cau hinh stock idx=%u (r2_t2_ttl4). Yeu cau idx=%u bi tu choi.\r\n",
                           (unsigned)EXP_STOCK_IDX, (unsigned)target_idx);
         return;
     }
-#endif
     if (periodic_message_allowed || (m_offline_count > 0))
     {
         SEGGER_RTT_WriteString(0, "# [LOI] Dang chay hoac con log chua xa -> bam Nut 3 (xa log) hoac Nut 4 (xoa log) truoc khi doi idx.\r\n");
@@ -2015,26 +1762,7 @@ static void exp_tn3_select_preset(uint8_t target_idx)
     }
     (void)exp_tn3_apply_preset(target_idx, true);
 }
-#endif
 
-#if EXP_HOPS_RUNTIME
-static void exp_hops_cycle(void)
-{
-    if (periodic_message_allowed || (m_offline_count > 0))
-    {
-        SEGGER_RTT_WriteString(0, "# [LOI] Dang chay hoac con log chua xa -> khong doi so chang.\r\n");
-        return;
-    }
-
-    g_exp_hops = (uint8_t)((g_exp_hops >= 4) ? 1 : (g_exp_hops + 1));
-    SEGGER_RTT_printf(0, "# [INFO] Cau hinh %u chang | ttl_rx du kien tai GW = %d\r\n",
-                      (unsigned)g_exp_hops, (int)m_cfg_ttl_eff - ((int)g_exp_hops - 1));
-
-    hal_led_blink_stop();
-    hal_led_mask_set(BLUE_LED_pos | YELLOW_LED_pos, LED_MASK_STATE_OFF);
-    hal_led_blink_ms(BLUE_LED_pos, 300, g_exp_hops);
-}
-#endif
 
 static void exp_toggle_run(void)
 {
@@ -2051,13 +1779,6 @@ static void exp_toggle_run(void)
         return;
     }
 
-#if EXP_HOP_WHITELIST
-    if (m_my_chain_index == -1)
-    {
-        SEGGER_RTT_WriteString(0, "# [LOI] TU CHOI chay run: MAC chua duoc khai bao trong EXP_TOPOLOGY_CHAIN!\r\n");
-        return;
-    }
-#endif
 
     if (m_mid_run_reset)
     {
@@ -2075,17 +1796,14 @@ static void exp_toggle_run(void)
 
     EXP_STEP("cfg_capture");
     exp_cfg_capture();
-#if EXP_TN3_PRESET_RUNTIME
     if (!m_cfg_match_ok)
     {
         (void)exp_tn3_apply_preset(m_tn3_cfg_idx, false);
     }
-#endif
 
     const exp_tn3_cfg_t * p = &EXP_TN3_TABLE[m_tn3_cfg_idx];
     bool is_tx = (EXP_READ_CFG == 0) || (m_cfg_cli_pub == 1);
 
-#if EXP_READ_CFG && EXP_STRICT_CFG
     if (!m_cfg_match_ok)
     {
         SEGGER_RTT_printf(0, "# [LOI_CHOT_CHAN] Stack LECH voi bang TN3 idx=%u (r%u_t%u_ttl%u): "
@@ -2106,7 +1824,6 @@ static void exp_toggle_run(void)
         hal_led_blink_ms(YELLOW_LED_pos, 100, 6);
         return;
     }
-#endif
 
     if ((m_cfg_dbm != 127) && (m_cfg_dbm != (int8_t)EXP_TX_POWER_DBM))
     {
@@ -2129,9 +1846,6 @@ static void exp_toggle_run(void)
     if (!is_tx)
     {
         m_role_tx = false;
-        #if EXP_DEBUG_RX_MAC
-        g_dbg_rx_mac_left = 5;
-        #endif
         exp_cfg_line(m_cfg_buf, sizeof(m_cfg_buf));
         SEGGER_RTT_WriteString(0, m_cfg_buf);
         SEGGER_RTT_printf(0, "\r\n# [ACTION] BO THU / RELAY (idx=%u: r%u_t%u_ttl%u): da xac nhan cau hinh & san sang nhan.\r\n",
@@ -2220,52 +1934,6 @@ static void exp_dump_log(void)
         }
     }
 
-#if EXP_HOP_WHITELIST
-    if (!aborted && exp_is_dest())
-    {
-        uint32_t rx_rows = 0, rx_ok = 0;
-        for (uint16_t i = 0; i < n; i++)
-        {
-            if (UNPACK_EVT(m_offline_logs[i].ttl_evt) == EXP_EVT_RX)
-            {
-                rx_rows++;
-                if ((int)UNPACK_TTL(m_offline_logs[i].ttl_evt) == exp_ttl_rx)
-                {
-                    rx_ok++;
-                }
-            }
-        }
-        const uint32_t pct10 = (rx_rows > 0) ? ((rx_ok * 1000u) / rx_rows) : 0u;
-        const uint32_t pdr10 = (m_target_msgs > 0) ? ((rx_rows * 1000u) / (uint32_t)m_target_msgs) : 0u;
-        const char * verdict = "FAIL";
-        if (m_mid_run_reset)
-        {
-            verdict = "FAIL_MID_RESET";
-        }
-        else if (exp_ttl_rx <= 0 && rx_rows == 0)
-        {
-            verdict = "PASS_TTL_BOUND";
-        }
-        else if (rx_rows == 0)
-        {
-            verdict = "NO_RX";
-        }
-        else if (rx_rows > 0 && pct10 >= 950u)
-        {
-            verdict = "PASS";
-        }
-        int l = snprintf(m_cfg_buf, sizeof(m_cfg_buf),
-                         "# HOPCHECK hops=%u;ttl_rx_exp=%d;match=%u;rx_rows=%u;pct=%u.%u;"
-                         "target=%u;pdr_vs_target_pct=%u.%u;verdict=%s\r\n",
-                         (unsigned)g_exp_hops, exp_ttl_rx, (unsigned)rx_ok, (unsigned)rx_rows,
-                         (unsigned)(pct10 / 10u), (unsigned)(pct10 % 10u),
-                         (unsigned)m_target_msgs, (unsigned)(pdr10 / 10u), (unsigned)(pdr10 % 10u), verdict);
-        if (l > 0 && !rtt_write_line_reliable(m_cfg_buf, (unsigned)l))
-        {
-            aborted = true;
-        }
-    }
-#endif
 
     int len = snprintf(m_line_buf, sizeof(m_line_buf),
                        "--- BAT DAU XA LOG CSV --- SO DONG: %u; BI TRAN BUFFER: %u ---\r\n",
@@ -2340,9 +2008,102 @@ static void exp_dump_log(void)
     exp_noinit_save(m_tn3_cfg_idx, 0, m_mid_run_reset);
 }
 
+/* ---------- TN5 ---------- */
+__attribute__((weak)) void exp_tn5_lcd_sleep(void)
+{
+    /* TODO (phu thuoc driver st7789_drivers): gui SLPIN (0x10) + DISPOFF (0x28) va tat chan den nen.
+     * Ban co the dinh nghia lai ham nay o noi khac (ham weak se bi ghi de). */
+}
+
+#if EXP_TN5_AUTORUN && !EXP_TN5_DS
+/* Khong co nut/RTT luc do (J-Link phai thao): tu goi exp_toggle_run() cho den khi cau hinh khop */
+static void exp_tn5_autorun_service(void)
+{
+    static uint32_t next_try_s = EXP_TN5_AUTORUN_DELAY_S;
+    static bool     done       = false;
+
+    if (done) { return; }
+    if (periodic_message_allowed) { done = true; return; }
+    if (!m_boot_preset_done || !mesh_stack_is_device_provisioned()) { return; }
+    if (m_secondCounter < next_try_s) { return; }
+
+    next_try_s = m_secondCounter + 10;
+    exp_toggle_run();     /* vai tro TX: bat periodic_message_allowed; vai tro RX/relay: xac nhan cau hinh */
+    if (periodic_message_allowed || m_cfg_match_ok) { done = true; }
+}
+#endif
+
+/* Goi moi 1 s tu vong lap chinh: duty-cycle soi dot MQ-2 + doc cam bien. Khong dung LCD/RTT. */
+static void exp_tn5_second_tick(void)
+{
+    static uint32_t next_sense_s = 0;
+    const uint32_t  s = m_secondCounter;
+
+#if EXP_TN5_HEATER_CTRL
+    static bool     heater_on = false;
+    static uint32_t mq2_win   = 0xFFFFFFFFu;
+    const uint32_t  ph        = s % EXP_TN5_MQ2_PERIOD_S;
+    const bool      want_on   = (ph < EXP_TN5_MQ2_ON_S);
+
+    if (want_on != heater_on)   /* theo trang thai, khong theo dung tick: mat 1 tick van khong ket */
+    {
+        heater_on = want_on;
+        mq2_heater_set(heater_on);
+        exp_trig_marker(heater_on ? EXP_TRIG_HEAT_ON : EXP_TRIG_HEAT_OFF);
+    }
+#endif
+
+    if (s >= next_sense_s)
+    {
+        next_sense_s = s + EXP_TN5_SENSE_PERIOD_S;
+        exp_trig_marker(EXP_TRIG_SENSE);
+
+        if (aht10Available)
+        {
+            _clientTemperature = aht10_readTemperature(AHT10_FORCE_READ_DATA);
+            _clientHumidity    = aht10_readHumidity(false);
+        }
+        else
+        {
+            aht10Available = aht10_begin();
+        }
+
+#if EXP_TN5_HEATER_CTRL
+        const uint32_t win = s / EXP_TN5_MQ2_PERIOD_S;
+        if (mq2Available && heater_on && (ph >= EXP_TN5_MQ2_SETTLE_S) && (win != mq2_win))
+        {
+            mq2_win = win;   /* 1 mau hop le moi cua so soi dot */
+            _clientMQ2Value = read_mq2_sensor();
+        }
+#else
+        if (mq2Available)
+        {
+            _clientMQ2Value = read_mq2_sensor();   /* soi dot luon nong */
+        }
+#endif
+    }
+}
+
+#if EXP_TN5_DS
+/* Bien the A: ngu sau. Khong tro lai. */
+static void exp_tn5_enter_deep_sleep(void)
+{
+    mq2_heater_set(false);
+    hal_led_blink_stop();
+    hal_led_mask_set(BLUE_LED_pos | YELLOW_LED_pos, LED_MASK_STATE_OFF);
+    uint32_t e = nrf_mesh_disable();
+    SEGGER_RTT_printf(0, "# [TN5] nrf_mesh_disable = 0x%X\r\n", (unsigned)e);
+    (void)sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
+    SEGGER_RTT_WriteString(0, "# [TN5] NGU SAU. Thao J-Link, cap nguon qua PPK2, bo 30 s dau.\r\n");
+    for (;;)
+    {
+        (void)sd_app_evt_wait();
+    }
+}
+#endif
+
 static void exp_requests_service(void)
 {
-#if EXP_TN3_PRESET_RUNTIME
     if (!m_boot_preset_done && (m_secondCounter >= 2) && mesh_stack_is_device_provisioned())
     {
         m_boot_preset_done = true;
@@ -2356,6 +2117,9 @@ static void exp_requests_service(void)
         m_boot_preset_done = true;
         exp_tn3_select_preset(target);
     }
+
+#if EXP_TN5_ENERGY && EXP_TN5_AUTORUN && !EXP_TN5_DS
+    exp_tn5_autorun_service();
 #endif
 
     if (m_status_requested)
@@ -2367,13 +2131,6 @@ static void exp_requests_service(void)
         SEGGER_RTT_WriteString(0, "\r\n");
     }
 
-#if EXP_HOPS_RUNTIME
-    if (m_req_hops)
-    {
-        m_req_hops = false;
-        exp_hops_cycle();
-    }
-#endif
 
     if (m_req_toggle)
     {
@@ -2408,30 +2165,40 @@ static void exp_requests_service(void)
 
 int main(void)
 {
+    mq2_heater_init();   /* viec dau tien: soi dot MQ-2 TAT */
     log_config_init();
+    SEGGER_RTT_printf(0, "# TN5_CFG fw=%s;deepsleep=%d;role=%d;relay_retx=%d;cfg_idx=%d;trig=%d;sense_s=%d;"
+                         "mq2_on_s=%d;mq2_period_s=%d;mq2_settle_s=%d;tx_dbm=%d;lcd_sleep=%d;heater_ctrl=%d\r\n",
+                      FW_GIT_HASH, (int)EXP_TN5_DS, (int)EXP_TN5_ROLE, (int)EXP_TN5_RELAY_RETX,
+                      (int)EXP_TN5_CFG_IDX, (int)EXP_ENABLE_TRIG, (int)EXP_TN5_SENSE_PERIOD_S,
+                      (int)EXP_TN5_MQ2_ON_S, (int)EXP_TN5_MQ2_PERIOD_S, (int)EXP_TN5_MQ2_SETTLE_S,
+                      (int)EXP_TX_POWER_DBM, (int)EXP_TN5_LCD_SLEEP, (int)EXP_TN5_HEATER_CTRL);
     SEGGER_RTT_WriteString(0, "-> Qua log_config_init\r\n");
 
     _getResetProvisionKey = checktoResetProvisioned();
+    nrf_gpio_cfg_default(resetProvisionLED);   /* checktoResetProvisioned() de chan LED o muc output-thap */
     SEGGER_RTT_WriteString(0, "-> Qua checktoResetProvisioned\r\n");
 
     all_parameters_initialization();
-    uart_init();
-    SEGGER_RTT_WriteString(0, "-> Qua uart_init\r\n");
 
-    mq2_saadc_init();
-    SEGGER_RTT_WriteString(0, "-> Qua mq2_saadc_init\r\n");
-
+#if !EXP_TN5_DS
     glcd_display_initialization();
     SEGGER_RTT_WriteString(0, "-> Qua glcd_init\r\n");
 
     glcd_printText("Nodes:", 1, 40, TFT_WHITE, TFT_BLACK);
     SEGGER_RTT_WriteString(0, "-> Qua glcd_printText\r\n");
+    exp_tn5_lcd_sleep();
+#endif
 
     initialize();
     SEGGER_RTT_WriteString(0, "-> Qua initialize\r\n");
 
     start();
     SEGGER_RTT_WriteString(0, "-> Qua start (Mesh da chay)\r\n");
+    (void)sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
+#if EXP_TN5_DS
+    exp_tn5_enter_deep_sleep();   /* khong tro lai: bo qua WDT, timer 1 s, TWI, cam bien */
+#endif
 
     wdt_init();
     SEGGER_RTT_WriteString(0, "-> Qua wdt_init\r\n");
@@ -2469,7 +2236,6 @@ int main(void)
     {
         _clientTemperature = aht10_readTemperature(AHT10_FORCE_READ_DATA);
         _clientHumidity = aht10_readHumidity(false);
-        glcd_printSensor(_clientTemperature, _clientHumidity, _clientMQ2Value);
     }
 
     if (_getResetProvisionKey)
@@ -2477,7 +2243,7 @@ int main(void)
         trigger_egu30_event();
     }
 
-    SEGGER_RTT_WriteString(0, "-> Vao vong lap for(;;) thanh cong! (TN4 v1: 3 chang, stock idx=9, se tu ap preset o s=2)\r\n");
+    SEGGER_RTT_WriteString(0, "-> Vao vong lap for(;;) thanh cong! (" FW_GIT_HASH ", se tu ap preset o s=2)\r\n");
 
     for (;;)
     {
@@ -2491,59 +2257,7 @@ int main(void)
                 trigger_egu30_event();
             }
 
-            char rtt_buf[192];
-            const exp_tn3_cfg_t * p = &EXP_TN3_TABLE[m_tn3_cfg_idx];
-            const char * mode = periodic_message_allowed ? "TX=RUN" : (m_role_tx ? "TX=IDLE" : "RX/RLY");
-            snprintf(rtt_buf, sizeof(rtt_buf),
-                     "[TICK] s=%u | idx=%u(r%u_t%u_ttl%u) ok=%u rst_err=%u | %s %u/%u fail=%u | LOG=%u RLY=%u DC=%u | wf=%u/%uM k=%u\r\n",
-                     (unsigned)m_secondCounter,
-                     (unsigned)m_tn3_cfg_idx, (unsigned)p->relay_retx, (unsigned)p->net_tx, (unsigned)p->ttl,
-                     (unsigned)(m_cfg_match_ok ? 1u : 0u), (unsigned)m_mid_run_reset,
-                     mode,
-                     (unsigned)m_tx_packet_count, (unsigned)m_target_msgs, (unsigned)m_tx_fail_total,
-                     (unsigned)m_offline_count, (unsigned)m_relay_ok_cnt, (unsigned)m_drop_cache_cnt,
-                     (unsigned)m_wifi_ch, (unsigned)m_wifi_mbps, (unsigned)m_run_k);
-            SEGGER_RTT_WriteString(0, rtt_buf);
-            (void)get_local_time_us();
-
-            glcd_integer_print(m_secondCounter);
-            display_ClientStatus();
-
-            if (clearAllDisplayNodes)
-            {
-                clearSavedExtEEPROMNodes();
-                clearNodesScreen();
-                display_nodes();
-                clearAllDisplayNodes = false;
-            }
-
-            bool is_timeout = check_connection_nodes();
-            bool is_poll_5s = (m_secondCounter % 5 == 0);
-
-            if (!is_timeout && is_poll_5s)
-            {
-                if (mq2Available)
-                {
-                    _clientMQ2Value = read_mq2_sensor();
-                }
-
-                if (aht10Available)
-                {
-                    _clientTemperature = aht10_readTemperature(AHT10_FORCE_READ_DATA);
-                    _clientHumidity = aht10_readHumidity(false);
-                    glcd_printSensor(_clientTemperature, _clientHumidity, _clientMQ2Value);
-                }
-                else
-                {
-                    aht10Available = aht10_begin();
-                }
-            }
-
-            if ((refreshDisplayCounter > 0) || is_timeout || is_poll_5s)
-            {
-                display_nodes();
-                refreshDisplayCounter = 0;
-            }
+            exp_tn5_second_tick();   /* TN5: khong RTT/LCD/display_nodes moi giay */
 
             m_second_changed = false;
         }

@@ -37,13 +37,10 @@
 #include "mesh_lpn.h"
 #endif
 
-extern volatile uint8_t g_dbg_rx_mac_left;
 extern void exp_trig_begin(void);
 extern void exp_trig_end(uint8_t pulses);
 #define EXP_TRIG_FWD_PULSES 2
 
-extern bool exp_packet_allow(const uint8_t * p_adv_addr, uint8_t adv_type);
-extern bool exp_packet_is_neighbor_echo(const uint8_t * p_adv_addr, uint8_t adv_type);
 extern void offline_log_push_relay(uint16_t src, uint16_t dst, uint32_t net_seq, uint8_t ttl_tx, uint8_t ttl_rx, int8_t rssi);
 extern void offline_log_on_drop_cache(uint16_t src, uint32_t net_seq, uint8_t ttl_rx, int8_t rssi);
 
@@ -279,34 +276,11 @@ uint32_t network_packet_in(const uint8_t * p_packet, uint32_t net_packet_len, co
         return NRF_ERROR_NULL;
     }
 
-    bool is_echo_only = false;
     int8_t rx_rssi = 0;
 
     if (p_rx_metadata != NULL && p_rx_metadata->source == NRF_MESH_RX_SOURCE_SCANNER)
     {
         rx_rssi = p_rx_metadata->params.scanner.rssi;
-
-        #if EXP_DEBUG_RX_MAC
-        if (g_dbg_rx_mac_left > 0)
-        {
-            const uint8_t * p_addr = p_rx_metadata->params.scanner.adv_addr.addr;
-            SEGGER_RTT_printf(0, "# [RX_DEBUG_MAC] adv_addr: { 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X }\r\n",
-                              p_addr[0], p_addr[1], p_addr[2], p_addr[3], p_addr[4], p_addr[5]);
-            g_dbg_rx_mac_left--;
-        }
-        #endif
-
-        if (!exp_packet_allow(p_rx_metadata->params.scanner.adv_addr.addr, 0x2A))
-        {
-            if (exp_packet_is_neighbor_echo(p_rx_metadata->params.scanner.adv_addr.addr, 0x2A))
-            {
-                is_echo_only = true;
-            }
-            else
-            {
-                return NRF_SUCCESS;
-            }
-        }
     }
 
     const packet_mesh_net_packet_t * p_net_packet = (const packet_mesh_net_packet_t *) p_packet;
@@ -337,11 +311,6 @@ uint32_t network_packet_in(const uint8_t * p_packet, uint32_t net_packet_len, co
                                   net_metadata.internal.sequence_number,
                                   net_metadata.ttl,
                                   rx_rssi);
-        return NRF_SUCCESS;
-    }
-
-    if (is_echo_only)
-    {
         return NRF_SUCCESS;
     }
 
